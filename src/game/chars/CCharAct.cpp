@@ -3346,11 +3346,16 @@ CRegion * CChar::CanMoveWalkTo( CPointMap & ptDst, bool fCheckChars, bool fCheck
 			return nullptr;
 		}
 
-		//if ( (Stat_GetVal(STAT_DEX) <= 0) && (!IsStatFlag(STATF_DEAD)) )
-		//{
-		//	SysMessageDefault(DEFMSG_MSG_FATIGUE);
-		//	return nullptr;
-		//}
+		if ( (Stat_GetVal(STAT_DEX) <= 0) && (!IsStatFlag(STATF_DEAD)) )
+		{		
+			UpdateStatVal(STAT_INT, -1);
+			if (Stat_GetVal(STAT_INT) <= 1)
+			{
+				SysMessageDefault(DEFMSG_MSG_FATIGUE);
+				return nullptr;
+				
+			}
+		}
 
 		if ( iWeightLoadPercent > 200 )
 		{
