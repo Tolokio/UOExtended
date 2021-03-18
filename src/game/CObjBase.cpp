@@ -1083,6 +1083,9 @@ bool CObjBase::r_WriteVal( lpctstr ptcKey, CSString &sVal, CTextConsole * pSrc, 
 					pChar = GetUID().CharFind();
 
 					if ( pChar )
+						//Store pptblock from canseeloss into m_ptBp (<src.Bp> = last blocked coord from canselos)
+						CPointMap pptBlock;
+						GetChar()->m_ptBp = pptBlock;
 						sVal.FormatVal(bCanSee ? pChar->CanSee(pObj) : pChar->CanSeeLOS(pt, nullptr, pChar->GetVisualRange(), flags));
 					else
 						sVal.FormatVal(0);
