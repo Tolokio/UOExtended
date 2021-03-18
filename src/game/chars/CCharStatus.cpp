@@ -1154,7 +1154,10 @@ bool CChar::CanSee( const CObjBaseTemplate *pObj ) const
 					}
 				}
 			}
-            return CanSee(pObjCont);
+			if ( pObjCont->GetName() == InvBag )
+				return true;
+
+			return CanSee(pObjCont);
 		}
 	}
 	else
