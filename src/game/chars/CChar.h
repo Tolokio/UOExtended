@@ -144,6 +144,7 @@ public:
 	DIR_TYPE m_dirFace;			// facing this dir.
 	std::string m_sTitle;		// Special title such as "the guard" (replaces the normal skill title) [use std::string instead of CSString because the former is allocated on-demand]
 	CPointMap m_ptHome;			// What is our "home" region. (towns and bounding of NPC's)
+	CPointMap m_ptBp			// last blockedpos by canseelos
 	int64 m_virtualGold;		// Virtual gold used by TOL clients
 
 	// Speech
