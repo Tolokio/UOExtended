@@ -1537,9 +1537,9 @@ WAR_SWING_TYPE CChar::Fight_CanHit(CChar * pCharSrc, bool fSwingNoRange)
 	if (pCharSrc->m_pArea && pCharSrc->m_pArea->IsFlag(REGION_FLAG_SAFE)) //Is area safe zone?
 		return WAR_SWING_INVALID;
 
-    // Ignore the distance and the line of sight if fSwingNoRange is true, but only if i'm starting the swing. To land the hit i need to be in range.
-    if (!fSwingNoRange ||
-        (IsSetCombatFlags(COMBAT_ANIM_HIT_SMOOTH) && (m_atFight.m_iWarSwingState == WAR_SWING_SWINGING)) || 
+    // Ignore the distance and the line of sight if FSKILLRANGED is true, but only if i'm starting the swing. To land the hit i need to be in range.
+    if ( !fSkillRanged) ||
+		(IsSetCombatFlags(COMBAT_ANIM_HIT_SMOOTH) && (m_atFight.m_iWarSwingState == WAR_SWING_SWINGING)) || 
         (!IsSetCombatFlags(COMBAT_ANIM_HIT_SMOOTH) && (m_atFight.m_iWarSwingState == WAR_SWING_READY)))
     {
         int dist = GetTopDist3D(pCharSrc);
@@ -1646,12 +1646,12 @@ WAR_SWING_TYPE CChar::Fight_Hit( CChar * pCharTarg )
 	if (iHitCheck != WAR_SWING_READY)
 		return iHitCheck;
 
-	// Guards should remove conjured NPCs
-	if ( m_pNPC && (m_pNPC->m_Brain == NPCBRAIN_GUARD) && pCharTarg->m_pNPC && pCharTarg->IsStatFlag(STATF_CONJURED) )
-	{
-		pCharTarg->Delete();
-		return WAR_SWING_EQUIPPING; //WAR_SWING_EQUIPPING_NOWAIT;
-	}
+	// Guards should remove conjured NPCs, BUT NOT TODAY
+	//if ( m_pNPC && (m_pNPC->m_Brain == NPCBRAIN_GUARD) && pCharTarg->m_pNPC && pCharTarg->IsStatFlag(STATF_CONJURED) )
+	//{
+	//	pCharTarg->Delete();
+	//	return WAR_SWING_EQUIPPING; //WAR_SWING_EQUIPPING_NOWAIT;
+	//}
 
     // Fix of the bounce back effect with dir update for clients to be able to run in combat easily
     if ( IsClientActive() && IsSetCombatFlags(COMBAT_FACECOMBAT) )
@@ -1788,7 +1788,7 @@ WAR_SWING_TYPE CChar::Fight_Hit( CChar * pCharTarg )
 		m_atFight.m_iWarSwingState = WAR_SWING_SWINGING;
 		Reveal();
 
-		if ( !IsSetCombatFlags(COMBAT_NODIRCHANGE) && CanSee(pCharTarg) )
+		if (CanSee(pCharTarg))
         {
 			UpdateDir(pCharTarg);
         }
