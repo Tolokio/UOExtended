@@ -1820,15 +1820,32 @@ WAR_SWING_TYPE CChar::Fight_Hit( CChar * pCharTarg )
 		ITEMID_TYPE AnimID = ITEMID_NOTHING;
 		dword AnimHue = 0, AnimRender = 0;
 		pWeapon->Weapon_GetRangedAmmoAnim(AnimID, AnimHue, AnimRender);
-		pCharTarg->Effect(EFFECT_BOLT, AnimID, this, 18, 1, false, AnimHue, AnimRender);
-
-		if ( m_pClient && (skill == SKILL_THROWING) )		// throwing weapons also have anim of the weapon returning after throw it
+		//missed shots will not land on character or go back to source.
+		if ( m_Act_Difficulty < 0 )
 		{
-			m_pClient->m_timeLastSkillThrowing = CWorldGameTime::GetCurrentTime().GetTimeRaw();
-			m_pClient->m_pSkillThrowingTarg = pCharTarg;
-			m_pClient->m_SkillThrowingAnimID = AnimID;
-			m_pClient->m_SkillThrowingAnimHue = AnimHue;
-			m_pClient->m_SkillThrowingAnimRender = AnimRender;
+			CPointMap tposi
+			tposi = pCharTarg->pt;
+			tposi.m_x += (short)Calc_GetRandVal2(-6, 6);
+			tposi.m_y += (short)Calc_GetRandVal2(-6, 6);
+			tposi.m_z += 1
+			if ( !tposi.IsValidPoint() )	// hit the edge of the world, so we shot to targp but not to enemy.
+			{
+				tposi = pCharTarg->pt;
+				tposi.m_z += 1
+			}
+			EffectLocation(tposi, EFFECT_BOLT, AnimID, this, 18, 1, false, AnimHue, AnimRender);
+		}
+		else //we hit
+		{
+			pCharTarg->Effect(EFFECT_BOLT, AnimID, this, 18, 1, false, AnimHue, AnimRender);
+			if ( m_pClient && (skill == SKILL_THROWING) )		// throwing weapons also have anim of the weapon returning after throw it
+			{
+				m_pClient->m_timeLastSkillThrowing = CWorldGameTime::GetCurrentTime().GetTimeRaw();
+				m_pClient->m_pSkillThrowingTarg = pCharTarg;
+				m_pClient->m_SkillThrowingAnimID = AnimID;
+				m_pClient->m_SkillThrowingAnimHue = AnimHue;
+				m_pClient->m_SkillThrowingAnimRender = AnimRender;
+			}
 		}
 	}
 
@@ -1855,7 +1872,8 @@ WAR_SWING_TYPE CChar::Fight_Hit( CChar * pCharTarg )
 			if (40 >= Calc_GetRandVal(100))
 			{
 				pAmmo->UnStackSplit(1);
-				pAmmo->MoveToDecay(pCharTarg->GetTopPoint(), g_Cfg.m_iDecay_Item);
+				//arrow goes tposi if u fail
+				pAmmo->MoveToDecay(tposi, g_Cfg.m_iDecay_Item);
 			}
 			else
 				pAmmo->ConsumeAmount(1);
