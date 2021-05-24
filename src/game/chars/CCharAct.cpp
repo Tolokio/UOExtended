@@ -3351,8 +3351,8 @@ CRegion * CChar::CanMoveWalkTo( CPointMap & ptDst, bool fCheckChars, bool fCheck
 			UpdateStatVal(STAT_INT, -1);
 			if (Stat_GetVal(STAT_INT) <= 1)
 			{
-				SysMessageDefault(DEFMSG_MSG_FATIGUE);
-				return nullptr;
+				//SysMessageDefault(DEFMSG_MSG_FATIGUE);
+				//return nullptr;
 				
 			}
 		}
@@ -3465,6 +3465,13 @@ CRegion * CChar::CanMoveWalkTo( CPointMap & ptDst, bool fCheckChars, bool fCheck
 
 	if ( !fCheckOnly )
 	{
+		// Falling trigger
+		if ( pChar->GetTopZ() - 10 >= ptDst.m_z )
+		{
+			//char is falling
+			g_Log.EventWarn("a Char is falling");
+		}
+		//
 		EXC_SET_BLOCK("Stamina penalty");
 		// Chance to drop more stamina if running or overloaded
 		CVarDefCont *pVal = GetKey("OVERRIDE.RUNNINGPENALTY", true);
