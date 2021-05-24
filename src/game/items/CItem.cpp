@@ -18,6 +18,7 @@
 #include "../CSector.h"
 #include "../CServer.h"
 #include "../CWorld.h"
+#include "../CWorldTickingList.h"
 #include "../CWorldGameTime.h"
 #include "../CWorldMap.h"
 #include "../triggers.h"
@@ -47,6 +48,7 @@ lpctstr const CItem::sm_szTrigName[ITRIG_QTY+1] =	// static
 	"@AddWhiteCandle",
 	"@AfterClick",
 	"@Buy",
+	"@CarveCorpse",			//I am a corpse and i am going to be carved.
 	"@Click",
 	"@ClientTooltip",	// Sending tooltip to a client
 	"@ClientTooltip_AfterDefault",
@@ -75,6 +77,7 @@ lpctstr const CItem::sm_szTrigName[ITRIG_QTY+1] =	// static
     "@RegionLeave",
 	"@SELL",
 	"@Ship_Turn",
+	"@Smelt",			// I am going to be smelted.
 	"@Spawn",
 	"@SpellEffect",		// cast some spell on me.
 	"@Start",
@@ -153,7 +156,7 @@ CItem::CItem( ITEMID_TYPE id, CItemBase * pItemDef ) :
     /* CCItemDamageable is also added from CObjBase::r_LoadVal(OC_CANMASK) for manual override of can flags
     * but it's required to add it also on item's creation depending on it's CItemBase can flags.
     */
-    if (CCItemDamageable::CanSubscribe(this))
+	if (CCItemDamageable::CanSubscribe(this))
     {
         SubscribeComponent(new CCItemDamageable(this));
     }
@@ -161,8 +164,9 @@ CItem::CItem( ITEMID_TYPE id, CItemBase * pItemDef ) :
     {
         SubscribeComponent(new CCFaction());  // Adding it only to equippable items
     }
-    SubscribeComponentProps(new CCPropsItem());
-    SubscribeComponentProps(new CCPropsItemChar());
+
+	TrySubscribeComponentProps<CCPropsItem>();
+	TrySubscribeComponentProps<CCPropsItemChar>();
 }
 
 void CItem::DeleteCleanup(bool fForce)
@@ -170,8 +174,13 @@ void CItem::DeleteCleanup(bool fForce)
 	ADDTOCALLSTACK("CItem::DeleteCleanup");
 	_fDeleting = true;
 
+	// We don't want to have invalid pointers over there
+	// Already called by CObjBase::DeletePrepare -> CObjBase::_GoSleep
+	//CWorldTickingList::DelObjSingle(this);
+	//CWorldTickingList::DelObjStatusUpdate(this, false);
+
 	// Remove corpse map waypoint on enhanced clients
-	if (IsType(IT_CORPSE) && m_uidLink)
+	if (IsType(IT_CORPSE) && m_uidLink.IsValidUID())
 	{
 		CChar* pChar = m_uidLink.CharFind();
 		if (pChar && pChar->GetClientActive())
@@ -197,20 +206,20 @@ void CItem::DeleteCleanup(bool fForce)
 			break;
 	}
 
-    if (CUID uidMulti = GetComponentOfMulti())
+	CUID uidTest(GetComponentOfMulti());
+    if (uidTest.IsValidUID())
     {
-        CItemMulti *pMulti = static_cast<CItemMulti*>(uidMulti.ItemFind(true));
-        if (pMulti)
+        if (auto* pMulti = static_cast<CItemMulti*>(uidTest.ItemFind(true)))
         {
-            pMulti->DeleteComponent(GetUID());
+            pMulti->DeleteComponent(GetUID(), true);
         }
     }
-    if (CUID uidMulti = GetLockDownOfMulti())
+	uidTest = GetLockDownOfMulti();
+    if (uidTest.IsValidUID())
     {
-        CItemMulti *pMulti = static_cast<CItemMulti*>(uidMulti.ItemFind(true));
-        if (pMulti)
+		if (auto* pMulti = static_cast<CItemMulti*>(uidTest.ItemFind(true)))
         {
-            pMulti->UnlockItem(GetUID());
+            pMulti->UnlockItem(GetUID(), true);
         }
     }
 }
@@ -233,7 +242,7 @@ bool CItem::Delete(bool fForce)
 	if (( NotifyDelete() == false ) && !fForce)
 		return false;
 
-	DeletePrepare();
+	DeletePrepare();	// Virtual -> Must remove early because virtuals will fail in child destructor.
 	DeleteCleanup(fForce);
 
 	return CObjBase::Delete(fForce);
@@ -241,11 +250,15 @@ bool CItem::Delete(bool fForce)
 
 CItem::~CItem()
 {
+	EXC_TRY("Cleanup in destructor");
 	ADDTOCALLSTACK("CItem::~CItem");
-	DeletePrepare();	// Must remove early because virtuals will fail in child destructor.
-	DeleteCleanup(true);
+
+	DeletePrepare();	// Using this in the destructor will fail to call virtuals, but it's better than nothing.
+	CItem::DeleteCleanup(true);
 	
 	g_Serv.StatDec(SERV_STAT_ITEMS);
+
+	EXC_CATCH;
 }
 
 CItem * CItem::CreateBase( ITEMID_TYPE id, IT_TYPE type )	// static
@@ -641,7 +654,7 @@ bool CItem::IsTopLevelMultiLocked() const
 	const CRegion * pArea = GetTopPoint().GetRegion( REGION_TYPE_MULTI );
 	if ( pArea == nullptr )
 		return false;
-	if ( pArea->GetResourceID() == m_uidLink )
+	if ( pArea->GetResourceID().GetObjUID() == m_uidLink.GetObjUID() )
 		return true;
 	return false;
 }
@@ -1027,7 +1040,7 @@ int CItem::FixWeirdness()
 
         case IT_KEY:
             // blank unlinked keys.
-            if (m_itKey.m_UIDLock && !IsValidUID())
+            if (m_itKey.m_UIDLock.IsValidUID() && !IsValidUID())
             {
                 g_Log.EventError("Key '%s' (UID=0%x) has bad link to 0%x: blanked out.\n", GetName(), (dword)GetUID(), (dword)(m_itKey.m_UIDLock));
                 m_itKey.m_UIDLock.ClearUID();
@@ -1152,8 +1165,10 @@ int CItem::FixWeirdness()
 
     else if (IsTopLevel())
     {
-        if (IsAttr(ATTR_DECAY) && !IsTimerSet())
+        if (IsAttr(ATTR_DECAY) && !_IsTimerSet() /*&& !_IsSleeping()*/)
         {
+			// An item marked to decay but with an elapsed or immediately about to elapse timer.
+			// // Ignore sleeping items. Maybe it's not broken and it will decay immediately after its sector goes awake.
             iResultCode = 0x2236;
             return iResultCode;	// get rid of it.
         }
@@ -1370,30 +1385,6 @@ void CItem::_SetTimeout( int64 iMsecs )
 	//  It may be a decay timer or it might be a trigger timer
 
 	CTimedObject::_SetTimeout(iMsecs);
-
-	// Items on the ground must be put in sector list correctly.
-	if ( !IsTopLevel() )
-		return;
-
-	CSector * pSector = GetTopSector();
-	if ( !pSector )
-		return;
-
-	CItemsList::sm_fNotAMove = true;
-	pSector->MoveItemToSector(this);
-	CItemsList::sm_fNotAMove = false;
-	SetUIDContainerFlags(0);
-}
-
-void CItem::SetTimeout(int64 iMsecs)
-{
-	ADDTOCALLSTACK("CItem::SetTimeout");
-	THREAD_UNIQUE_LOCK_SET;
-	_SetTimeout(iMsecs);
-}
-
-void CItem::OnMoveFrom()	// Moving from current location.
-{
 }
 
 bool CItem::MoveToUpdate(const CPointMap& pt, bool fForceFix)
@@ -1409,16 +1400,18 @@ bool CItem::MoveToDecay(const CPointMap & pt, int64 iMsecsTimeout, bool fForceFi
 	return MoveToUpdate(pt, fForceFix);
 }
 
-void CItem::SetDecayTime(int64 iMsecsTimeout)
+void CItem::SetDecayTime(int64 iMsecsTimeout, bool fOverrideAlways)
 {
 	ADDTOCALLSTACK("CItem::SetDecayTime");
 	// 0 = default (decay on the next tick)
 	// -1 = set none. (clear it)
 
-	if (IsTimerSet() && ! IsAttr(ATTR_DECAY))
+	if (!fOverrideAlways && _IsTimerSet() && !IsAttr(ATTR_DECAY))
 	{
-		return;	// already a timer here. let it expire on it's own
+		// Already a timer here (and it's not a decay timer). Let it expire on it's own.
+		return;
 	}
+
 	if (iMsecsTimeout == 0)
 	{
 		if (IsTopLevel())
@@ -1427,6 +1420,7 @@ void CItem::SetDecayTime(int64 iMsecsTimeout)
             iMsecsTimeout = -1;
 	}
 	_SetTimeout(iMsecsTimeout);
+
 	if (iMsecsTimeout >= 0)
 		SetAttr(ATTR_DECAY);
 	else
@@ -1472,8 +1466,8 @@ SOUND_TYPE CItem::GetDropSound( const CObjBase * pObjOn ) const
 	CVarDefCont * pVar = GetDefKey("DROPSOUND", true);
 	if ( pVar )
 	{
-		if ( pVar->GetValNum() )
-			iSnd = (SOUND_TYPE)(pVar->GetValNum());
+		if (int64 iVal = pVar->GetValNum())
+			iSnd = (SOUND_TYPE)iVal;
 	}
 
 	// normal drop sound for what dropped in/on.
@@ -2327,22 +2321,18 @@ void CItem::r_Write( CScript & s )
 
 	CObjBase::r_Write(s);
 
-	{
 	const ITEMID_TYPE iDispID = GetDispID();
 	if (iDispID != GetID())	// the item is flipped.
 		s.WriteKeyStr("DISPID", g_Cfg.ResourceGetName(CResourceID(RES_ITEMDEF, iDispID)));
-	}
 
-	{
 	const int iAmount = GetAmount();
 	if (iAmount != 1)
 		s.WriteKeyVal("AMOUNT", iAmount);
-	}
 
 	if ( !pItemDef->IsType(m_type) )
 		s.WriteKeyStr("TYPE", g_Cfg.ResourceGetName(CResourceID(RES_TYPEDEF, m_type)));
 	if ( m_uidLink.IsValidUID() )
-		s.WriteKeyHex("LINK", m_uidLink);
+		s.WriteKeyHex("LINK", m_uidLink.GetObjUID());
 	if ( m_Attr )
 		s.WriteKeyHex("ATTR", m_Attr);
 	if ( m_attackBase )
@@ -2351,14 +2341,15 @@ void CItem::r_Write( CScript & s )
 		s.WriteKeyFormat("ARMOR", "%hu,%hu", m_defenseBase, m_defenseBase + m_defenseRange);
     if (!GetSpawn())
     {
-		CSString sVal;
         if ( m_itNormal.m_more1 )
         {
+			CSString sVal(false);
             r_WriteMore1(sVal);
             s.WriteKeyStr("MORE1", sVal.GetBuffer());
         }
         if ( m_itNormal.m_more2 )
         {
+			CSString sVal(false);
             r_WriteMore2(sVal);
             s.WriteKeyStr("MORE2", sVal.GetBuffer());
         }
@@ -2375,7 +2366,7 @@ void CItem::r_Write( CScript & s )
 				s.WriteKeyVal("LAYER", iEqLayer);
 		}
 
-		s.WriteKeyHex("CONT", pCont->GetUID());
+		s.WriteKeyHex("CONT", pCont->GetUID().GetObjUID());
 		if ( pCont->IsItem() )
 		{
 			s.WriteKeyStr("P", GetContainedPoint().WriteUsed());
@@ -3268,7 +3259,7 @@ bool CItem::r_LoadVal( CScript & s ) // Load an item Script
 			break;
 		case IC_MOREP:
 			{
-				CPointMap pt;	// invalid point
+				CPointBase pt;	// invalid point
 				tchar *pszTemp = Str_GetTemp();
 				Str_CopyLimitNull( pszTemp, s.GetArgStr(), STR_TEMPLENGTH );
 				GETNONWHITESPACE( pszTemp );
@@ -3359,8 +3350,9 @@ bool CItem::r_Load( CScript & s ) // Load an item from script
 	ADDTOCALLSTACK("CItem::r_Load");
 	CScriptObj::r_Load( s );
 
-	if ( GetContainer() == nullptr )	// Place into the world.
+	if ( GetContainer() == nullptr )
 	{
+        // Actually place the item into the world.
 		if ( GetTopPoint().IsCharValid())
 			MoveToUpdate( GetTopPoint());
 	}
@@ -3747,35 +3739,18 @@ bool CItem::SetType(IT_TYPE type, bool fPreCheck)
 
     // Post-assignment checks
     // CComponents sanity check.
-    CComponent* pComp;
-    CComponentProps* pCompProps;
 
     // Never unsubscribe Props Components, because if the type is changed to an unsubscribable type and then again to the previous type, the component will be deleted and created again.
     //  This means that all the properties (base and "dynamic") are lost.
     // Add first the most specific components, so that the tooltips will be better ordered
-    pCompProps = GetComponentProps(COMP_PROPS_ITEMWEAPONRANGED);
-    if (!pCompProps && CCPropsItemWeaponRanged::CanSubscribe(this))
-    {
-        SubscribeComponentProps(new CCPropsItemWeaponRanged());
-    }
-    pCompProps = GetComponentProps(COMP_PROPS_ITEMWEAPON);
-    if (!pCompProps && CCPropsItemWeapon::CanSubscribe(this))
-    {
-        SubscribeComponentProps(new CCPropsItemWeapon());
-    }
-    pCompProps = GetComponentProps(COMP_PROPS_ITEMEQUIPPABLE);
-    if (!pCompProps && CCPropsItemEquippable::CanSubscribe(this))
-    {
-        SubscribeComponentProps(new CCPropsItemEquippable());
-    }
-    pCompProps = GetComponentProps(COMP_PROPS_ITEMCHAR);
-    if (!pCompProps)
-    {
-        SubscribeComponentProps(new CCPropsItemChar());
-    }
+	TrySubscribeAllowedComponentProps<CCPropsItemWeaponRanged>(this);
+	TrySubscribeAllowedComponentProps<CCPropsItemWeapon>(this);
+	TrySubscribeAllowedComponentProps<CCPropsItemEquippable>(this);
+
+	TrySubscribeComponentProps<CCPropsItemChar>();
 
     // Ensure that an item that should have a given component has it, and if the item shouldn't have a given component, check if it's subscribed, in that case unsubscribe it.
-    pComp = GetComponent(COMP_SPAWN);
+	CComponent* pComp = GetComponent(COMP_SPAWN);
     bool fIsSpawn = false;
     if ((type != IT_SPAWN_CHAR) && (type != IT_SPAWN_ITEM))
     {
@@ -3957,7 +3932,7 @@ void CItem::DupeCopy( const CItem * pItem )
 
 	m_dwDispIndex = pItem->m_dwDispIndex;
 	SetBase( pItem->Item_GetDef() );
-	_SetTimeout( pItem->GetTimerDiff() );
+	_SetTimeout( pItem->_GetTimerAdjusted() );
 	SetType(pItem->m_type);
 	m_wAmount = pItem->m_wAmount;
 	m_Attr  = pItem->m_Attr;
@@ -5139,7 +5114,7 @@ lpctstr CItem::Use_SpyGlass( CChar * pUser ) const
 		int iDist = ptCoords.GetDist(pChar->GetTopPoint());
 		if ( iDist > iVisibility ) // Can we see it?
 			continue;
-		iCharSighted ++;
+		++ iCharSighted;
 		if ( !pCharSighted || iDist < ptCoords.GetDist(pCharSighted->GetTopPoint())) // Only find the closest char to us
 		{
 			pCharSighted = pChar;
@@ -5206,7 +5181,7 @@ bool CItem::Use_Light()
 	else if ( IsType(IT_LIGHT_OUT) )
 	{
 		Sound(m_itLight.m_burned ? 0x4b8 : 0x3be);
-		SetDecayTime();
+		SetDecayTime(0);
 	}
 
 	return true;
@@ -5934,10 +5909,33 @@ bool CItem::IsResourceMatch( const CResourceID& rid, dword dwArg ) const
 
 CCFaction * CItem::GetSlayer() const
 {
-    ADDTOCALLSTACK("CItem::GetSlayer");
     return static_cast<CCFaction*>(GetComponent(COMP_FACTION));
 }
 
+
+void CItem::_GoAwake()
+{
+	ADDTOCALLSTACK("CItem::_GoAwake");
+	CObjBase::_GoAwake();
+	
+	// Items equipped or inside containers don't receive ticks and need to be added to a list of items to be processed separately
+	if (!IsTopLevel())
+	{
+		CWorldTickingList::AddObjStatusUpdate(this, false);
+	}
+}
+
+void CItem::_GoSleep()
+{
+	ADDTOCALLSTACK("CItem::_GoSleep");
+	CObjBase::_GoSleep();
+
+	// Items equipped or inside containers don't receive ticks and need to be added to a list of items to be processed separately
+	if (IsTopLevel())
+	{
+		CWorldTickingList::DelObjStatusUpdate(this, false);
+	}
+}
 
 bool CItem::_OnTick()
 {
@@ -5949,10 +5947,15 @@ bool CItem::_OnTick()
 
     EXC_SET_BLOCK("sleep check");
 
-    if (GetTopSector()->IsSleeping())
+	const CSector* pSector = GetTopSector();	// It prints an error if it belongs to an invalid sector.
+    if (pSector && pSector->IsSleeping())
     {
-        _SetTimeout(1);      //Make it tick after sector's awakening.
-        _GoSleep();
+		//Make it tick after sector's awakening.
+		if (!_IsSleeping())
+		{
+			_GoSleep();
+		}
+		_SetTimeout(1);
         return true;
     }
 
@@ -6019,8 +6022,10 @@ bool CItem::_OnTick()
 					return true;
 
 				--m_itLight.m_charges;
-				if ( m_itLight.m_charges > 0 )
+				if (m_itLight.m_charges > 0)
+				{
 					_SetTimeoutS(60);
+				}
 				else
 				{
 					// Burn out the light
@@ -6099,9 +6104,9 @@ bool CItem::_OnTick()
 					else
 					{
 						--m_itPotion.m_tick;
-						tchar *pszMsg = Str_GetTemp();
 						CObjBase* pObj = static_cast<CObjBase*>(GetTopLevelObj());
 						ASSERT(pObj);
+						tchar* pszMsg = Str_GetTemp();
 						pObj->Speak(Str_FromI_Fast(m_itPotion.m_tick, pszMsg, STR_TEMPLENGTH, 10), HUE_RED);
 						_SetTimeoutS(1);
 					}

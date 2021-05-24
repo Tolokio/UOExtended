@@ -20,7 +20,9 @@
 class PacketSend;
 class PacketPropertyList;
 class CCSpawn;
+
 class CSector;
+class CWorldTicker;
 
 class CObjBase : public CObjBaseTemplate, public CScriptObj, public CEntity, public CEntityProps, public virtual CTimedObject
 {
@@ -29,6 +31,7 @@ class CObjBase : public CObjBaseTemplate, public CScriptObj, public CEntity, pub
 	static lpctstr const sm_szRefKeys[];    // All Instances of CItem or CChar have these base attributes.
 
     friend class CSector;
+    friend class CWorldTicker;
 
 private:
 	int64 m_timestamp;          // TimeStamp
@@ -77,7 +80,7 @@ protected:
      */
     virtual void DeletePrepare();
 
-    void DeleteCleanup(bool fForce);
+    void DeleteCleanup(bool fForce);    // not virtual!
 
 public:
     inline bool IsBeingDeleted() const noexcept
@@ -108,12 +111,12 @@ public:
 	*/
     CBaseBaseDef* Base_GetDef() const noexcept;
 
-	dword GetCanFlagsBase() const noexcept
+	inline dword GetCanFlagsBase() const noexcept
 	{
 		return Base_GetDef()->m_Can;
 	}
 
-	dword GetCanFlags() const noexcept
+    inline dword GetCanFlags() const noexcept
 	{
 		// m_CanMask is XORed to m_Can:
 		//  If a flag in m_CanMask is enabled in m_Can, it is ignored in this Can check
@@ -178,16 +181,6 @@ public:
      * @param   t_time  The time.
      */
 	void SetTimeStamp(int64 t_time);
-
-    /*
-    * @brief    Add (if not present) this object and its children objects to the world ticking list.
-    */
-    void TickingListRecursiveAdd();
-
-    /*
-    * @brief    Remove (if present) this object and its children objects to the world ticking list.
-    */
-    void TickingListRecursiveDel();
 
     /*
     * @brief    Add iDelta to this object's timer (if active) and its child objects.
@@ -893,10 +886,16 @@ public:
 #define SU_UPDATE_TOOLTIP   0x04    // update tooltip to all
 	uchar m_fStatusUpdate;  // update flags for next tick
 
+ 
+protected:
+    virtual void _GoAwake() override;
+    virtual void _GoSleep() override;
+
+protected:
     /**
      * @brief   Update Status window if any flag requires it on m_fStatusUpdate.
      */
-	virtual void OnTickStatusUpdate();
+    virtual void OnTickStatusUpdate();
 
     virtual bool _CanTick() const override;
     //virtual bool  _CanTick() const override;   // Not needed: the right virtual is called by CTimedObj::_CanTick.
@@ -1016,6 +1015,7 @@ enum ITRIG_TYPE
     ITRIG_ADDWHITECANDLE,
 	ITRIG_AfterClick,
 	ITRIG_Buy,
+    ITRIG_CarveCorpse,                //I am a corpse and i am going to be carved.
 	ITRIG_Click,
 	ITRIG_CLIENTTOOLTIP,        // Sending tooltip to client for this item
 	ITRIG_CLIENTTOOLTIP_AFTERDEFAULT,
@@ -1044,6 +1044,7 @@ enum ITRIG_TYPE
     ITRIG_RegionLeave,          // Ship leaving the region.
 	ITRIG_Sell,                 // I'm being sold.
 	ITRIG_Ship_Turn,            // I'm a ship and i'm turning around.
+    ITRIG_Smelt,                // I'm going to be smelt.
     ITRIG_Spawn,                // This spawn is going to generate something.
 	ITRIG_SPELLEFFECT,          // cast some spell on me.
     ITRIG_Start,                // Start trigger, right now used only on Champions.
@@ -1103,8 +1104,6 @@ enum CTRIG_TYPE : short
 	CTRIG_Dismount,         // I'm dismounting.
 	CTRIG_DYE,
 	CTRIG_Eat,              // I'm eating something.
-	CTRIG_EffectAdd,        // A spell effected me, i'm getting bonus/penalties from it.
-	CTRIG_EffectRemove,		// Removing spell item from character.
 	CTRIG_EnvironChange,    // my environment changed somehow (light,weather,season,region)
 	CTRIG_ExpChange,        // EXP is going to change
 	CTRIG_ExpLevelChange,   // Experience LEVEL is going to change
@@ -1126,6 +1125,7 @@ enum CTRIG_TYPE : short
     // ITRIG_QTY
 	CTRIG_itemAfterClick,       // I'm going to click one item.
 	CTRIG_itemBuy,              // I'm going to buy one item.
+    CTRIG_itemCarveCorpse,            // I am carving a corpse.
 	CTRIG_itemClick,            // I clicked one item
 	CTRIG_itemClientTooltip,    // Requesting ToolTip for one item.
 	CTRIG_itemClientTooltip_AfterDefault,
@@ -1150,7 +1150,8 @@ enum CTRIG_TYPE : short
     CTRIG_itemRedeed,           // was redeeded (multis)
     CTRIG_itemRegionEnter,      // enter a region (ships)
     CTRIG_itemRegionLeave,      // leave a region (ships)
-	CTRIG_itemSell,             // I'l selling an item.
+	CTRIG_itemSell,             // I am selling an item.
+    CTRIG_itemSmelt,            // I am smelting an item.
 	CTRIG_itemSPELL,            // cast some spell on the item.
 	CTRIG_itemSTEP,             // stepped on an item
 	CTRIG_itemTARGON_CANCEL,    // Canceled a target made from the item.
@@ -1229,6 +1230,8 @@ enum CTRIG_TYPE : short
 	CTRIG_SpellBook,        // Opening a spellbook
 	CTRIG_SpellCast,        // Char is casting a spell.
 	CTRIG_SpellEffect,      // A spell just hit me.
+    CTRIG_SpellEffectAdd,        // A spell effected me, i'm getting bonus/penalties from it.
+    CTRIG_SpellEffectRemove,		// Removing spell item from character.
     CTRIG_SpellEffectTick,  // A spell with SPELLFLAG_TICK just ticked.
 	CTRIG_SpellFail,        // The spell failed.
 	CTRIG_SpellSelect,      // selected a spell.

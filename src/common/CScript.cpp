@@ -280,17 +280,16 @@ int CScriptKey::GetArgRange()
 	return Exp_GetRange( m_pszArg );
 }
 
-CScriptKey::CScriptKey() : m_pszKey(nullptr), m_pszArg(nullptr)
+CScriptKey::CScriptKey() :
+	m_pszKey(nullptr), m_pszArg(nullptr)
 {
 }
 
-CScriptKey::CScriptKey( tchar * ptcKey, tchar * ptcArg ) : m_pszKey( ptcKey ), m_pszArg( ptcArg )
+CScriptKey::CScriptKey( tchar * ptcKey, tchar * ptcArg ) : 
+	m_pszKey( ptcKey ), m_pszArg( ptcArg )
 {
 }
 
-CScriptKey::~CScriptKey()
-{
-}
 
 ///////////////////////////////////////////////////////////////
 // -CScriptKeyAlloc
@@ -425,15 +424,13 @@ CScript::CScript()
 	_InitBase();
 }
 
-CScript::CScript(lpctstr ptcKey)
+CScript::CScript(lpctstr ptcKey) : CScript()
 {
-	_InitBase();
 	ParseKey(ptcKey);
 }
 
-CScript::CScript(lpctstr ptcKey, lpctstr ptcVal)
+CScript::CScript(lpctstr ptcKey, lpctstr ptcVal) : CScript()
 {
-	_InitBase();
 	ParseKey( ptcKey, ptcVal );
 }
 
@@ -833,21 +830,30 @@ CScriptLineContext CScript::GetContext() const
     return LineContext;
 }
 
-bool _cdecl CScript::WriteSection( lpctstr pszSection, ... )
+bool _cdecl CScript::WriteSection( lpctstr ptcSection, ... )
 {
 	ADDTOCALLSTACK_INTENSIVE("CScript::WriteSection");
 	// Write out the section header.
-	va_list vargs;
-	va_start( vargs, pszSection );
 
 	// EndSection();	// End any previous section.
+	TemporaryString tsHeader;
+	TemporaryString tsSectionFormatted;
+
+	{
+		va_list vargs;
+		va_start(vargs, ptcSection);
+		vsnprintf(tsSectionFormatted.buffer(), tsSectionFormatted.capacity(), ptcSection, vargs);
+		va_end(vargs);
+	}
+
+	
+	memcpy(tsHeader.buffer(), "\n[", 2u);	// 2 -> not counting the string terminator
+	size_t offset = 2;
+	offset += Str_CopyLimitNull(tsHeader.buffer() + offset, tsSectionFormatted.buffer(), tsHeader.capacity() - 2);
+	offset += Str_ConcatLimitNull(tsHeader.buffer() + offset, "]\n", tsHeader.capacity() - offset);
 
 	THREAD_UNIQUE_LOCK_SET;
-	_Printf( "\n[");
-	_VPrintf( pszSection, vargs );
-	_Printf( "]\n" );
-
-	va_end( vargs );
+	_Write(tsHeader.buffer(), int(offset));
 
 	return true;
 }
@@ -913,6 +919,7 @@ bool CScript::WriteKeyStr(lpctstr ptcKey, lpctstr ptcVal)
 	ptcBuf[uiStrLen]   = '\0'; // Needed by Str_ConcatLimitNull
 	uiStrLen += Str_ConcatLimitNull(ptcBuf + uiStrLen, ptcVal, uiCapacity - uiStrLen);
 	ptcBuf[uiStrLen++] = '\n';
+	// ptcBuf[uiStrLen] = '\0';		// Not needed, since the whole buffer is zero-filled.
 	Write(ptcBuf, int(uiStrLen));
 
 	return true;

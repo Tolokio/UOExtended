@@ -664,14 +664,14 @@ effect_bounce:
 	if ( IsAosFlagEnabled(FEATURE_AOS_UPDATE_B) )
 	{
 		CItem * pEvilOmen = LayerFind(LAYER_SPELL_Evil_Omen);
-		if ( pEvilOmen )
+		if ( pEvilOmen && !g_Cfg.GetSpellDef(SPELL_Evil_Omen)->IsSpellType(SPELLFLAG_SCRIPTED))
 		{
 			iDmg += iDmg / 4;
 			pEvilOmen->Delete();
 		}
 
 		CItem * pBloodOath = LayerFind(LAYER_SPELL_Blood_Oath);
-		if ( pBloodOath && pBloodOath->m_uidLink == pSrc->GetUID() && !(uType & DAMAGE_FIXED) )	// if DAMAGE_FIXED is set we are already receiving a reflected damage, so we must stop here to avoid an infinite loop.
+		if ( pBloodOath && pBloodOath->m_uidLink == pSrc->GetUID() && !(uType & DAMAGE_FIXED) && !g_Cfg.GetSpellDef(SPELL_Blood_Oath)->IsSpellType(SPELLFLAG_SCRIPTED))	// if DAMAGE_FIXED is set we are already receiving a reflected damage, so we must stop here to avoid an infinite loop.
 		{
 			iDmg += iDmg / 10;
 			pSrc->OnTakeDamage(iDmg * (100 - pBloodOath->m_itSpell.m_spelllevel) / 100, this, DAMAGE_MAGIC|DAMAGE_FIXED);
@@ -680,7 +680,8 @@ effect_bounce:
 
 	const CCharBase * pCharDef = Char_GetDef();
 	ASSERT(pCharDef);
-    const CCPropsChar *pCCPChar = GetCCPropsChar(), *pBaseCCPChar = pCharDef->GetCCPropsChar();
+	const CCPropsChar* pCCPChar = GetComponentProps<CCPropsChar>();
+	const CCPropsChar* pBaseCCPChar = pCharDef->GetComponentProps<CCPropsChar>();
 
 	// MAGICF_IGNOREAR bypasses defense completely
 	if ( (uType & DAMAGE_MAGIC) && IsSetMagicFlags(MAGICF_IGNOREAR) )
@@ -1349,7 +1350,7 @@ void CChar::Fight_HitTry()
 			}
 		}
 		else
-    {
+		{
 				Skill_Start(SKILL_NONE);
 				m_Fight_Targ_UID.InitUID();
 		}
@@ -1451,7 +1452,7 @@ void CChar::Fight_HitTry()
             {
 				Fight_Attack(NPC_FightFindBestTarget());	// keep attacking the same char or change the targ
             }
-            if (!IsTimerSet())	// If i haven't landed the hit yet...
+            if (!_IsTimerSet())	// If i haven't landed the hit yet...
             {
                 // Player & NPC: wait some time and check again if i can land the hit
                 // NPC: also keeps its AI alive, so that in NPCActFight the NPC can further approach his target.
@@ -1460,7 +1461,7 @@ void CChar::Fight_HitTry()
 			return;
 		}
 		case WAR_SWING_SWINGING:	// must come back here again to complete
-            if (!IsTimerSet())
+            if (!_IsTimerSet())
             {
                 // This happens (only with both PreHit and Swing_NoRange on) if i can't land the hit right now, otherwise retHit
                 //  should be WAR_SWING_EQUIPPING. If this isn't the case, there's something wrong (asserts are placed to intercept this situations).
@@ -1624,7 +1625,8 @@ WAR_SWING_TYPE CChar::Fight_Hit( CChar * pCharTarg )
                 if ( iDmgType & DAMAGE_FIXED )
                     iDmgType &= ~DAMAGE_FIXED;
 
-                const CCPropsChar *pCCPChar = GetCCPropsChar(), *pBaseCCPChar = Base_GetDef()->GetCCPropsChar();
+				const CCPropsChar* pCCPChar = GetComponentProps<CCPropsChar>();
+				const CCPropsChar* pBaseCCPChar = Base_GetDef()->GetComponentProps<CCPropsChar>();
 
                 pCharTarg->OnTakeDamage(
                     Fight_CalcDamage(m_uidWeapon.ItemFind()),
@@ -1693,8 +1695,8 @@ WAR_SWING_TYPE CChar::Fight_Hit( CChar * pCharTarg )
 
         if ( pWeapon )
         {
-            CResourceID ridAmmo = pWeapon->Weapon_GetRangedAmmoRes();
-            if ( ridAmmo )
+            const CResourceID ridAmmo(pWeapon->Weapon_GetRangedAmmoRes());
+            if (ridAmmo.IsValidUID())
             {
                 pAmmo = pWeapon->Weapon_FindRangedAmmo(ridAmmo);
                 if ( !pAmmo && m_pPlayer )
@@ -1859,7 +1861,7 @@ WAR_SWING_TYPE CChar::Fight_Hit( CChar * pCharTarg )
 		{
 			CScriptTriggerArgs Args(0, 0, pWeapon);
 			if ( pAmmo )
-				Args.m_VarsLocal.SetNum("Arrow", pAmmo->GetUID());
+				Args.m_VarsLocal.SetNum("Arrow", pAmmo->GetUID().IsValidUID());
 			if ( OnTrigger(CTRIG_HitMiss, pCharTarg, &Args) == TRIGRET_RET_TRUE )
 				return WAR_SWING_EQUIPPING_NOWAIT;
 
@@ -1961,7 +1963,7 @@ WAR_SWING_TYPE CChar::Fight_Hit( CChar * pCharTarg )
 	CScriptTriggerArgs Args(iDmg, iDmgType, pWeapon);
 	Args.m_VarsLocal.SetNum("ItemDamageChance", 25);
 	if ( pAmmo )
-		Args.m_VarsLocal.SetNum("Arrow", pAmmo->GetUID());
+		Args.m_VarsLocal.SetNum("Arrow", pAmmo->GetUID().IsValidUID());
 
 	if ( IsTrigUsed(TRIGGER_SKILLSUCCESS) )
 	{
@@ -2043,8 +2045,9 @@ WAR_SWING_TYPE CChar::Fight_Hit( CChar * pCharTarg )
 	}
 
 	// Took my swing. Do Damage !
-    const CCPropsChar *pCCPChar = GetCCPropsChar(), *pBaseCCPChar = Base_GetDef()->GetCCPropsChar();
-    pCharTarg->OnTakeDamage(
+	const CCPropsChar* pCCPChar = GetComponentProps<CCPropsChar>();
+	const CCPropsChar* pBaseCCPChar = Base_GetDef()->GetComponentProps<CCPropsChar>();
+	pCharTarg->OnTakeDamage(
         iDmg,
         this,
         iDmgType,

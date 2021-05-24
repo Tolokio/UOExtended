@@ -17,6 +17,7 @@
 #include "../CWorld.h"
 #include "../CWorldGameTime.h"
 #include "../CWorldMap.h"
+#include "../CWorldTickingList.h"
 #include "../spheresvr.h"
 #include "../triggers.h"
 #include "CChar.h"
@@ -499,9 +500,9 @@ void CChar::OnRemoveObj( CSObjContRec* pObRec )	// Override this = called when r
     const CBaseBaseDef* pItemBase = pItem->Base_GetDef();
 
     // Start of CCPropsItemEquippable props
-    CCPropsChar *pCCPChar = GetCCPropsChar();
-    CCPropsItemEquippable *pItemCCPItemEquippable = pItem->GetCCPropsItemEquippable();
-    const CCPropsItemEquippable *pItemBaseCCPItemEquippable = pItemBase->GetCCPropsItemEquippable();
+    CCPropsChar *pCCPChar = GetComponentProps<CCPropsChar>();
+    CCPropsItemEquippable *pItemCCPItemEquippable = pItem->GetComponentProps<CCPropsItemEquippable>();
+    const CCPropsItemEquippable *pItemBaseCCPItemEquippable = pItemBase->GetComponentProps<CCPropsItemEquippable>();
 
     if (pItemCCPItemEquippable || pItemBaseCCPItemEquippable)
     {
@@ -2003,7 +2004,11 @@ bool CChar::ItemBounce( CItem * pItem, bool fDisplayMsg )
         }
 	}
 
-	Sound(pItem->GetDropSound(pPack));
+	if (!IsStatFlag(STATF_DEAD | STATF_CONJURED))
+	{
+		// Ensure i am not summon, or inside CreateLoot trigger
+		Sound(pItem->GetDropSound(pPack));
+	}
 	if (fDisplayMsg)
 		SysMessagef( g_Cfg.GetDefaultMsg( DEFMSG_MSG_ITEMPLACE ), pItem->GetName(), pszWhere );
 	return true;
@@ -2122,7 +2127,7 @@ bool CChar::ItemEquip( CItem * pItem, CChar * pCharMsg, bool fFromDClick )
 		pItem->UnStackSplit(1, this);
 
 	pItem->RemoveSelf();		// Remove it from the container so that nothing will be stacked with it if unequipped
-	pItem->SetDecayTime(-1);	// Kill any decay timer.
+	pItem->SetDecayTime(-1);	// Kill any DECAY timer.
 	LayerAdd(pItem, layer);
 	if ( !pItem->IsItemEquipped() )	// Equip failed ? (cursed?) Did it just go into pack ?
 		return false;
@@ -2156,9 +2161,9 @@ bool CChar::ItemEquip( CItem * pItem, CChar * pCharMsg, bool fFromDClick )
     const CBaseBaseDef* pItemBase = pItem->Base_GetDef();
 
     // Start of CCPropsItemEquippable props
-    CCPropsChar *pCCPChar = GetCCPropsChar();
-    const CCPropsItemEquippable *pItemBaseCCPItemEquippable = pItemBase->GetCCPropsItemEquippable();
-    CCPropsItemEquippable *pItemCCPItemEquippable = pItem->GetCCPropsItemEquippable();
+	CCPropsChar* pCCPChar = GetComponentProps<CCPropsChar>();
+	CCPropsItemEquippable* pItemCCPItemEquippable = pItem->GetComponentProps<CCPropsItemEquippable>();
+	const CCPropsItemEquippable* pItemBaseCCPItemEquippable = pItemBase->GetComponentProps<CCPropsItemEquippable>();
 
     if (pItemCCPItemEquippable || pItemBaseCCPItemEquippable)
     {
@@ -2905,15 +2910,15 @@ bool CChar::OnTickEquip( CItem * pItem )
 		return Spell_Equip_OnTick(pItem);
 	}
 
-	return( pItem->OnTick());
+	// Do not acquire the mutex lock here, or we'll have deadlocks in multiple situations
+	return pItem->_OnTick();
 }
 
 // Leave the antidote in your body for a while.
 // iSkill = 0-1000
-bool CChar::SetPoisonCure( int iSkill, bool fExtra )
+bool CChar::SetPoisonCure( bool fExtra )
 {
 	ADDTOCALLSTACK("CChar::SetPoisonCure");
-	UNREFERENCED_PARAMETER(iSkill);
 
 	CItem * pPoison = LayerFind( LAYER_FLAG_Poison );
 	if ( pPoison )
@@ -2950,24 +2955,12 @@ bool CChar::SetPoison( int iSkill, int iHits, CChar * pCharSrc )
 			pParalyze->Delete();
 	}
 
-	CItem *pPoison = LayerFind(LAYER_FLAG_Poison);
-	if ( pPoison )
-	{
-		if ( !IsSetMagicFlags(MAGICF_OSIFORMULAS) )		// strengthen the poison
-		{
-			pPoison->m_itSpell.m_spellcharges += iHits;
-			return true;
-		}
-	}
-	else
-	{
-		int64 iPoisonDuration = (1 + Calc_GetRandLLVal(2)) * TENTHS_PER_SEC;	//in TENTHS of second
-		pPoison = Spell_Effect_Create(SPELL_Poison, LAYER_FLAG_Poison, iSkill, iPoisonDuration, pCharSrc, false);
-		if ( !pPoison )
-			return false;
-		LayerAdd(pPoison, LAYER_FLAG_Poison);
-	}
-
+	int64 iPoisonDuration = (1 + Calc_GetRandLLVal(2)) * TENTHS_PER_SEC;	//in TENTHS of second
+	CItem* pPoison = Spell_Effect_Create(SPELL_Poison, LAYER_FLAG_Poison, iSkill, iPoisonDuration, pCharSrc, false);
+	if ( !pPoison )
+		return false;
+	LayerAdd(pPoison, LAYER_FLAG_Poison);
+	
 	if (!IsSetMagicFlags(MAGICF_OSIFORMULAS))
 	{
 		//pPoison->m_itSpell.m_spellcharges has already been set by Spell_Effect_Create (and it's equal to iSkill)
@@ -3007,17 +3000,19 @@ bool CChar::SetPoison( int iSkill, int iHits, CChar * pCharSrc )
 			default:
 			case 0:		pPoison->m_itSpell.m_spellcharges = 3; break;
 		}
-	}
 
-	if (IsAosFlagEnabled(FEATURE_AOS_UPDATE_B))
-	{
-		CItem * pEvilOmen = LayerFind(LAYER_SPELL_Evil_Omen);
-		if (pEvilOmen)
+		if (IsAosFlagEnabled(FEATURE_AOS_UPDATE_B))
 		{
-			++pPoison->m_itSpell.m_spelllevel;	// Effect 2: next poison will have one additional level of poison.
-			pEvilOmen->Delete();
+			CItem* pEvilOmen = LayerFind(LAYER_SPELL_Evil_Omen);
+			if (pEvilOmen && !g_Cfg.GetSpellDef(SPELL_Evil_Omen)->IsSpellType(SPELLFLAG_SCRIPTED))
+			{
+				++pPoison->m_itSpell.m_spelllevel;	// Effect 2: next poison will have one additional level of poison, this makes sense only with MAGICF_OSIFORMULAS enabled.
+				pEvilOmen->Delete();
+			}
 		}
 	}
+
+	
 
 	CClient *pClient = GetClientActive();
 	if ( pClient && IsSetOF(OF_Buffs) )
@@ -3156,7 +3151,7 @@ bool CChar::Death()
 	SoundChar(CRESND_DIE);
 	StatFlag_Set(STATF_DEAD);
 	StatFlag_Clear(STATF_STONE|STATF_FREEZE|STATF_HIDDEN|STATF_SLEEPING|STATF_HOVERING);
-	SetPoisonCure(0, true);
+	SetPoisonCure(true);
 	Skill_Cleanup();
 	Spell_Dispel(100);		// get rid of all spell effects (moved here to prevent double @Destroy trigger)
 
@@ -4309,7 +4304,7 @@ void CChar::OnTickStatusUpdate()
 		GetClientActive()->UpdateStats();
 
 	const int64 iTimeCur = CWorldGameTime::GetCurrentTime().GetTimeRaw();
-	int64 iTimeDiff = iTimeCur - _iTimeLastHitsUpdate;
+	const int64 iTimeDiff = iTimeCur - _iTimeLastHitsUpdate;
 	if ( g_Cfg.m_iHitsUpdateRate && ( iTimeDiff >= g_Cfg.m_iHitsUpdateRate ) )
 	{
 		if ( m_fStatusUpdate & SU_UPDATE_HITS )
@@ -4416,6 +4411,30 @@ bool CChar::_CanTick() const
 	return CObjBase::_CanTick();
 
 	EXC_CATCH;
+
+	return false;
+}
+
+void CChar::_GoAwake()
+{
+	ADDTOCALLSTACK("CChar::_GoAwake");
+
+	CObjBase::_GoAwake();
+	CContainer::_GoAwake();
+
+	CWorldTickingList::AddCharPeriodic(this, false);
+
+	_SetTimeout(Calc_GetRandVal(1 * MSECS_PER_SEC));  // make it tick randomly in the next sector, so all awaken NPCs get a different tick time.
+}
+
+void CChar::_GoSleep()
+{
+	ADDTOCALLSTACK("CChar::_GoSleep");
+
+	CContainer::_GoSleep(); // This method isn't virtual
+	CObjBase::_GoSleep();
+
+	CWorldTickingList::DelCharPeriodic(this, false);
 }
 
 // Get a timer tick when our timer expires.

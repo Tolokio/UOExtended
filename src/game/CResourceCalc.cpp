@@ -415,3 +415,168 @@ lpctstr CServerConfig::Calc_MaptoSextant( CPointMap pntCoords )
 
 	return pTemp;
 }
+
+ushort CServerConfig::Calc_SpellManaCost(CChar* pCharCaster, const CSpellDef* pSpell, CObjBase* pObj)
+{
+	ADDTOCALLSTACK("CServerConfig::Calc_SpellManaCost");
+
+	ASSERT(pCharCaster);
+	ASSERT(pSpell);
+
+	bool fScroll = false;
+	if (pObj != pCharCaster)
+	{
+		const CItem* pItem = dynamic_cast <const CItem*> (pObj);
+		if (pItem)
+		{
+			const IT_TYPE iType = pItem->GetType();
+			if (iType == IT_WAND)
+				return 0; //Spells from wands cost no mana.
+			else if (iType == IT_SCROLL)
+				fScroll = true;
+		}
+	}
+
+	const CCPropsChar* pCCPChar = pCharCaster->GetComponentProps<CCPropsChar>();
+	const CCPropsChar* pBaseCCPChar = pCharCaster->Base_GetDef()->GetComponentProps<CCPropsChar>();
+	const int iLowerManaCost = (int)pCharCaster->GetPropNum(pCCPChar, PROPCH_LOWERMANACOST, pBaseCCPChar);
+	ushort iCost = (ushort)(pSpell->m_wManaUse * ((100 - iLowerManaCost) / 100));
+	
+	if ( fScroll )
+		return iCost / 2; //spells cast from scrolls consume half of the mana.
+	
+	return iCost;
+}
+
+size_t CServerConfig::Calc_SpellReagentsConsume(CChar* pCharCaster, const CSpellDef* pSpell, CObjBase* pObj, bool fTest)
+{
+	ADDTOCALLSTACK("CServerConfig::Calc_SpellReagentsConsume");
+	
+	ASSERT(pCharCaster);
+	ASSERT(pSpell);
+
+	//Check for reagents
+	if (g_Cfg.m_fReagentsRequired && !pCharCaster->m_pNPC && (pObj == pCharCaster))
+	{
+		const CResourceQtyArray* pReagents = &(pSpell->m_Reags);
+		const CCPropsChar* pCCPChar = pCharCaster->GetComponentProps<CCPropsChar>();
+		const CCPropsChar* pBaseCCPChar = pCharCaster->Base_GetDef()->GetComponentProps<CCPropsChar>();
+		const int iLowerReagentCost = (int)pCharCaster->GetPropNum(pCCPChar, PROPCH_LOWERREAGENTCOST, pBaseCCPChar); //Also used for reducing Tithing points.
+		if ( Calc_GetRandVal(100) >= iLowerReagentCost)
+		{
+			CContainer* pCont = static_cast<CContainer*>(pCharCaster);
+			const size_t iMissing = pCont->ResourceConsumePart(pReagents, 1, 100, fTest);
+			if (iMissing != SCONT_BADINDEX)
+				return iMissing;
+		}
+	}
+	return SCONT_BADINDEX;
+}
+
+ushort CServerConfig::Calc_SpellTithingCost(CChar* pCharCaster, const CSpellDef* pSpell, CObjBase* pObj)
+{
+	ADDTOCALLSTACK("CServerConfig::Calc_SpellTithingCost");
+
+	ASSERT(pCharCaster);
+	ASSERT(pSpell);
+
+	//Check for tithing points.
+	if (g_Cfg.m_fReagentsRequired && !pCharCaster->m_pNPC && (pObj == pCharCaster))
+	{
+		
+		const CCPropsChar* pCCPChar = pCharCaster->GetComponentProps<CCPropsChar>();
+		const CCPropsChar* pBaseCCPChar = pCharCaster->Base_GetDef()->GetComponentProps<CCPropsChar>();
+		const int iLowerReagentCost = (int)pCharCaster->GetPropNum(pCCPChar, PROPCH_LOWERREAGENTCOST, pBaseCCPChar); //Also used for reducing Tithing points.
+		if (Calc_GetRandVal(100) >= iLowerReagentCost)
+			return (ushort)pSpell->m_wTithingUse; //Default amount of Tithing points consumed.
+	}
+	return 0; //No tithing points consumed.
+}
+
+bool CServerConfig::Calc_CurePoisonChance(const CItem* pPoison, int iCureLevel, bool fIsGm)
+{
+	ADDTOCALLSTACK("CServerConfig::Calc_CurePoisonChance");
+
+	if (!pPoison)
+		return false;
+
+	if (fIsGm)
+		return true;
+
+	int iCureChance = 0, iPoisonLevel = pPoison->m_itSpell.m_spelllevel;
+
+	//Override the Cure Poison Chance.
+	const CVarDefCont* pTagStorage = pPoison->GetKey("OVERRIDE.CUREPOISONCHANCE", true);
+	if (pTagStorage)
+	{
+		iCureChance = (int)pTagStorage->GetValNum();
+		return (Calc_GetRandVal(100) <= iCureChance);
+	}
+
+	if (!IsSetMagicFlags(MAGICF_OSIFORMULAS))
+	{
+		iCureChance = Calc_GetSCurve(iCureLevel - iPoisonLevel, 100);
+		return (Calc_GetRandVal(1000) <= iCureChance);
+	}
+	//If we use MAGICF_OSIFORMULAS, the poison level is in the 0-4+ range.
+	if (!iPoisonLevel) //Lesser Poison (iPoisonLevel 0) is always cured no matter the potion or spell/skill level value
+		return true;
+
+	//Cure Chance taken from: 
+	if (iCureLevel < 410)	//Lesser Cure Potion or our healing/veterinary/magery skill is less than 41.0 https://www.uoguide.com/Lesser_Cure_Potion
+	{
+		switch (iPoisonLevel)
+		{
+		case 1:
+			iCureChance = 35;
+			break;
+		case 2:
+			iCureChance = 15;
+			break;
+		case 3:
+			iCureChance = 10;
+			break;
+		default:
+			iCureChance = 5;
+			break;
+		}
+	}
+	else if (iCureLevel < 1010) //Cure Potion or our healing/veterinary/magery skill is between 41.0 and 100.9 https://www.uoguide.com/Cure_Potion 
+	{
+		switch (iPoisonLevel)
+		{
+		case 1:
+			iCureChance = 95;
+			break;
+		case 2:
+			iCureChance = 45;
+			break;
+		case 3:
+			iCureChance = 25;
+			break;
+		default:
+			iCureChance = 15;
+			break;
+		}
+	}
+	else //Greater Cure Potion or our healing/veterinary/magery skill is equal or above 101.0 https://www.uoguide.com/Greater_Cure_Potion
+	{
+		switch (iPoisonLevel)
+		{
+		case 1:
+			iCureChance = 100;
+			break;
+		case 2:
+			iCureChance = 75;
+			break;
+		case 3:
+			iCureChance = 45;
+			break;
+		default:
+			iCureChance = 25;
+			break;
+		}
+	}
+
+	return (Calc_GetRandVal(100) <= iCureChance);
+}

@@ -66,8 +66,6 @@ lpctstr const CChar::sm_szTrigName[CTRIG_QTY+1] =	// static
 	"@Dismount",			// I am trying to get rid of my ride right now
 	"@Dye",					// My color has been changed
 	"@Eat",
-	"@EffectAdd",
-	"@EffectRemove",
 	"@EnvironChange",		// my environment changed somehow (light,weather,season,region)
 	"@ExpChange",			// EXP is going to change
 	"@ExpLevelChange",		// Experience LEVEL is going to change
@@ -89,6 +87,7 @@ lpctstr const CChar::sm_szTrigName[CTRIG_QTY+1] =	// static
 	// ITRIG_QTY
 	"@itemAfterClick",
 	"@itemBuy",
+	"@itemCarveCorpse",			// I am carving a corpse.
 	"@itemClick",			// I clicked on an item
 	"@itemClientTooltip", 	// Receiving tooltip for something
 	"@itemClientTooltip_AfterDefault",
@@ -114,6 +113,7 @@ lpctstr const CChar::sm_szTrigName[CTRIG_QTY+1] =	// static
     "@ItemRegionEnter",
     "@ItemRegionLeave",
 	"@itemSELL",
+	"@itemSmelt",			// I am smelting an item.
 	"@itemSPELL",			// cast some spell on the item.
 	"@itemSTEP",			// stepped on an item
 	"@itemTARGON_CANCEL",
@@ -192,6 +192,8 @@ lpctstr const CChar::sm_szTrigName[CTRIG_QTY+1] =	// static
 	"@SpellBook",
 	"@SpellCast",			// Char is casting a spell.
 	"@SpellEffect",			// A spell just hit me.
+	"@SpellEffectAdd",		// A spell memory item is going to be placed upon me.
+	"@SpellEffectRemove",   // A spell memory item is going to be removed from me.
     "@SpellEffectTick",		// A spell is going to tick and have an effect on me.
 	"@SpellFail",			// The spell failed
 	"@SpellSelect",			// Selected a spell
@@ -241,6 +243,7 @@ CChar * CChar::CreateBasic(CREID_TYPE baseID) // static
 CChar::CChar( CREID_TYPE baseID ) :
 	CTimedObject(PROFILE_CHARS),
 	CObjBase( false ),
+	m_sTitle(false),
     m_Skill{}, m_Stat{}
 {
 	g_Serv.StatInc( SERV_STAT_CHARS );	// Count created CChars.
@@ -298,7 +301,8 @@ CChar::CChar( CREID_TYPE baseID ) :
     m_uiFame = 0;
     m_iKarma = 0;
 
-	Skill_Cleanup();
+	m_Act_Difficulty = 0;
+	m_Act_SkillCurrent = SKILL_NONE;
     m_atUnk.m_dwArg1 = 0;
     m_atUnk.m_dwArg2 = 0;
     m_atUnk.m_dwArg3 = 0;
@@ -306,13 +310,11 @@ CChar::CChar( CREID_TYPE baseID ) :
 	g_World.m_uidLastNewChar = GetUID();	// for script access.
 
     // SubscribeComponent Prop Components
-    SubscribeComponentProps(new CCPropsChar());
-    SubscribeComponentProps(new CCPropsItemChar());
+	TrySubscribeComponentProps<CCPropsChar>();
+	TrySubscribeComponentProps<CCPropsItemChar>();
 
     // SubscribeComponent regular Components
     SubscribeComponent(new CCFaction());
-
-    CTimedObject::GoSleep();  // Make it be sleeping at first, to awake it when placing it in the world (errors will show up otherwise).
 
 	ASSERT(IsDisconnected());
 }
@@ -321,9 +323,10 @@ CChar::CChar( CREID_TYPE baseID ) :
 CChar::~CChar()
 {
 	EXC_TRY("Cleanup in destructor");
+	ADDTOCALLSTACK("CChar::~CChar");
 
-	DeleteCleanup(true);
-	ClearContainer();
+	CChar::DeletePrepare();
+	CChar::DeleteCleanup(true);
 
     if (IsClientActive())    // this should never happen.
     {
@@ -355,7 +358,13 @@ void CChar::DeleteCleanup(bool fForce)
 	ADDTOCALLSTACK("CChar::DeleteCleanup");
 	_fDeleting = true;
 
-	CWorldTickingList::DelCharPeriodic(this);
+	// We don't want to have invalid pointers over there
+	// Already called by CObjBase::DeletePrepare -> CObjBase::_GoSleep
+	//CWorldTickingList::DelObjSingle(this);
+	//CWorldTickingList::DelObjStatusUpdate(this, false);
+
+	CWorldTickingList::DelCharPeriodic(this, false);
+
 
 	if (IsStatFlag(STATF_RIDDEN))
 	{
@@ -407,7 +416,7 @@ bool CChar::NotifyDelete()
 void CChar::DeletePrepare()
 {
 	ADDTOCALLSTACK("CChar::DeletePrepare");
-	ContentDelete(false);	// This object and its contents need to be deleted on the same tick
+	CContainer::ContentDelete(true);	// This object and its contents need to be deleted on the same tick
 	CObjBase::DeletePrepare();
 }
 
@@ -426,10 +435,7 @@ bool CChar::Delete(bool fForce)
 		pClient->GetNetState()->markReadClosed();
 	}
 	
-	DeleteCleanup(fForce);
-
-	// Detach from account now
-	ClearPlayer();
+	DeleteCleanup(fForce);	// not virtual
 
 	return CObjBase::Delete();
 }
@@ -508,13 +514,11 @@ void CChar::SetDisconnected(CSector* pNewSector)
         m_pParty = nullptr;
     }
 
-    CWorldTickingList::DelCharPeriodic(this);
-
     if ( IsDisconnected() )
         return;
 
 	// If the char goes offline, we don't want its items to tick anymore when the timer expires.
-	TickingListRecursiveDel();
+	_GoSleep();
 
     RemoveFromView();	// Remove from views.
     MoveToRegion(nullptr, false);
@@ -619,54 +623,6 @@ bool CChar::SetNPCBrain( NPCBRAIN_TYPE NPCBrain )
     return true;
 }
 
-void CChar::_GoSleep()
-{
-    ADDTOCALLSTACK("CChar::_GoSleep");
-    ASSERT(!_IsSleeping());
-
-	CWorldTickingList::DelCharPeriodic(this);   // do not insert into the mutex lock, it access back to this char.
-
-    CTimedObject::_GoSleep();
-
-	for (CSObjContRec* pObjRec : *this)
-	{
-		CItem* pItem = static_cast<CItem*>(pObjRec);
-        if (!pItem->IsSleeping())
-            pItem->GoSleep();
-    }
-}
-
-void CChar::GoSleep()
-{
-	ADDTOCALLSTACK("CChar::GoSleep");
-	THREAD_UNIQUE_LOCK_SET;
-	CChar::_GoSleep();
-}
-
-void CChar::_GoAwake()
-{
-    ADDTOCALLSTACK("CChar::_GoAwake");
-    ASSERT(_IsSleeping());
-
-	CWorldTickingList::AddCharPeriodic(this, true);
-
-    CTimedObject::_GoAwake();       // Awake it first, otherwise some other things won't work
-    _SetTimeout(Calc_GetRandVal(1 * MSECS_PER_SEC));  // make it tick randomly in the next sector, so all awaken NPCs get a different tick time.
-
-	for (CSObjContRec* pObjRec : *this)
-	{
-		CItem* pItem = static_cast<CItem*>(pObjRec);
-        if (pItem->IsSleeping())
-            pItem->GoAwake();
-    }
-}
-
-void CChar::GoAwake()
-{
-	ADDTOCALLSTACK("CChar::GoAwake");
-	THREAD_UNIQUE_LOCK_SET;
-	CChar::_GoAwake();
-}
 
 // Is there something wrong with this char?
 // RETURN: invalid code.
@@ -1249,19 +1205,30 @@ bool CChar::DupeFrom(const CChar * pChar, bool fNewbieItems )
 			}
 		}
 
-		const CChar * pTest3 = CUID::CharFindFromUID(pItem->m_uidLink);
-		if ( pTest3 && pTest3 == pChar)
-			pItem->m_uidLink = myUID;
+		CChar * pTest3 = CUID::CharFindFromUID(pItem->m_uidLink);
+		if (pTest3)
+		{
+			if (pTest3 == pChar)
+				pItem->m_uidLink = myUID; //If the character being duped has an item which linked to himself, set the newly duped character link instead.
+			else if (IsSetOF(OF_PetSlots) &&  pItem->IsMemoryTypes(MEMORY_IPET) && pTest3 == NPC_PetGetOwner())
+			{
+				const short iFollowerSlots = (short)GetDefNum("FOLLOWERSLOTS", true, 1);
+				//If we have reached the maximum follower slots we remove the ownership of the pet by clearing the memory flag instead of using NPC_PetClearOwners().
+				if (!pTest3->FollowersUpdate(this, maximum(0, iFollowerSlots)))
+					Memory_ClearTypes(MEMORY_IPET); 
+			}
+		}
 	}
 	// End copying items.
 
 	FixWeight();
 
-	if (pChar->_iTimePeriodicTick != 0)
+	if (!pChar->IsSleeping())
 	{
-		CWorldTickingList::AddCharPeriodic(this);
+		_GoAwake();
 	}
-
+	//g_World.m_uidNew stored the last duped item, so we need to set back again the newly duped character.
+	g_World.m_uidNew.SetObjUID(GetUID());
 	Update();
 	return true;
 }
@@ -1719,7 +1686,7 @@ void CChar::InitPlayer( CClient *pClient, const char *pszCharname, bool fFemale,
 	m_fonttype				= FONT_NORMAL;		// Set speech font type
 	m_SpeechHueOverride		= 0;				// Set no server-side speech color override
 	m_EmoteHueOverride		= 0;				// Set no server-side emote color override
-	m_sTitle.clear();							// Set title
+	m_sTitle.Clear();							// Set title
 
 	GetBank(LAYER_BANKBOX);			// Create bankbox
 	GetPackSafe();					// Create backpack
@@ -2291,7 +2258,7 @@ do_default:
 					else if ( !strnicmp(ptcKey, "TARGET", 6 ) )
 					{
 						ptcKey += 6;
-						if ( m_Act_UID )
+						if (m_Act_UID.IsValidUID())
 							sVal.FormatHex((dword)(m_Fight_Targ_UID));
 						else
 							sVal.FormatVal(-1);
@@ -2701,7 +2668,7 @@ do_default:
 				dword		dwBlockFlags = 0;
 				CRegion	*	pArea;
 				pArea = CheckValidMove( ptDst, &dwBlockFlags, dir, nullptr );
-				sVal.FormatHex( pArea ? pArea->GetResourceID() : 0 );
+				sVal.FormatHex( pArea ? pArea->GetResourceID().IsValidUID() : 0 );
 			}
 			return true;
 
@@ -3131,7 +3098,7 @@ do_default:
 		case CHC_TITLE:
 			{
 				if (strlen(ptcKey) == 5)
-					sVal = m_sTitle.c_str(); //GetTradeTitle
+					sVal = m_sTitle; //GetTradeTitle
 				else
 					sVal = GetTradeTitle();
 			}
@@ -3729,7 +3696,6 @@ void CChar::r_Write( CScript & s )
 
     // Do not save TAG.LastHit (used by PreHit combat flag). It's based on the server uptime, so if this tag isn't zeroed,
     //  after the server restart the char may not be able to attack until the server reaches the serv.time when the previous TAG.LastHit was set.
-	{
 	int64 iValLastHit = 0;
 	CVarDefContNum* pVarLastHit = m_TagDefs.GetKeyDefNum("LastHit");
 	if (pVarLastHit)
@@ -3744,20 +3710,18 @@ void CChar::r_Write( CScript & s )
 	{
 		pVarLastHit->SetValNum(iValLastHit);
 	}
-	}
 
 	if ( m_pPlayer )
 		m_pPlayer->r_WriteChar(this, s);
 	if ( m_pNPC )
 		m_pNPC->r_WriteChar(this, s);
 
-	{
 	const CPointMap& pt = GetTopPoint();
 	if (pt.IsValidPoint())
 		s.WriteKeyStr("P", pt.WriteUsed());
-	}
-	if ( !m_sTitle.empty() )
-		s.WriteKeyStr("TITLE", m_sTitle.c_str());
+
+	if ( !m_sTitle.IsEmpty() )
+		s.WriteKeyStr("TITLE", m_sTitle);
 	if ( m_fonttype != FONT_NORMAL )
 		s.WriteKeyVal("FONT", m_fonttype);
 	if (m_SpeechHueOverride)
@@ -3777,16 +3741,13 @@ void CChar::r_Write( CScript & s )
 	if ( m_defense )
 		s.WriteKeyVal("ARMOR", m_defense);
 
-	{
 	const uint uiActUID = m_Act_UID.GetObjUID();
 	if ((uiActUID & UID_UNUSED) != UID_UNUSED)
 		s.WriteKeyHex("ACT", uiActUID);
-	}
 
 	if ( m_Act_p.IsValidPoint() )
 		s.WriteKeyStr("ACTP", m_Act_p.WriteUsed());
 
-	{
 	const SKILL_TYPE action = Skill_GetActive();
 	if (action != SKILL_NONE)
 	{
@@ -3813,7 +3774,6 @@ void CChar::r_Write( CScript & s )
 				s.WriteKeyHex("ACTARG3", m_atUnk.m_dwArg3);
 		}
 	}
-	}
 
 	if ( m_virtualGold )
 		s.WriteKeyVal("VIRTUALGOLD", m_virtualGold);
@@ -3834,7 +3794,6 @@ void CChar::r_Write( CScript & s )
     s.WriteKeyVal("OKARMA", GetKarma() );
     s.WriteKeyVal("OFAME", GetFame() );
 
-	{
 	int iVal;
 	if ((iVal = Stat_GetMod(STAT_FOOD)) != 0)
 		s.WriteKeyVal("MODFOOD", iVal);
@@ -3885,7 +3844,6 @@ void CChar::r_Write( CScript & s )
 	if ((iVal = Stat_GetMax(STAT_INT)) != Stat_GetAdjusted(STAT_INT))
 		s.WriteKeyVal("MAXMANA", iVal);     // should be OMAXMANA, but we keep it like this for backwards compatibility
 	s.WriteKeyVal("MANA", Stat_GetVal(STAT_INT));
-	}
 
 	static constexpr lpctstr _ptcKeyRegen[STAT_QTY] =
 	{

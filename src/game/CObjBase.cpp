@@ -120,7 +120,10 @@ CObjBase::~CObjBase()
         }
     }	
 
-	DeleteCleanup(true);
+	// As a safety net. If we are calling those methods via the class destructor, we know that calling virtual methods won't work,
+	//  since the superclasses were already destructed. At least, do minimal cleanup here with CObjBase methods.
+	DeletePrepare();	// virtual
+	CObjBase::DeleteCleanup(true);	// it isn't virtual
 
 	FreePropertyList();
 
@@ -129,7 +132,8 @@ CObjBase::~CObjBase()
 		pBase->DelInstance();
 	}
 	--sm_iCount;
-	ASSERT( IsDisconnected());
+
+	// ASSERT( IsDisconnected()); // It won't be disconnected if removed by CSObjCont::ClearCont
 
 	// free up the UID slot.
 	SetUID( UID_UNUSED, false );
@@ -143,7 +147,7 @@ bool CObjBase::_IsDeleted() const
 }
 
 bool CObjBase::IsDeleted() const
-{
+{ 
 	THREAD_SHARED_LOCK_RETURN(_IsDeleted());	
 }
 
@@ -151,27 +155,31 @@ void CObjBase::DeletePrepare()
 {
 	ADDTOCALLSTACK("CObjBase::DeletePrepare");
 	// Prepare to delete.
+	CObjBase::_GoSleep();	// virtual, but superclass methods are called in their ::DeletePrepare methods
 	RemoveFromView();
-	RemoveSelf();	// Must remove early or else virtuals will fail.
+	RemoveSelf();
 }
 
 void CObjBase::DeleteCleanup(bool fForce)
 {
 	ADDTOCALLSTACK("CObjBase::DeleteCleanup");
 	_fDeleting = true;
+
+	RemoveSelf();
+
 	CEntity::Delete(fForce);
-	CWorldTickingList::DelObjStatusUpdate(this);
-	CWorldTickingList::DelObjSingle(this, false);
 	CWorldTimedFunctions::ClearUID(GetUID());
 }
 
 bool CObjBase::Delete(bool fForce)
 {
 	ADDTOCALLSTACK("CObjBase::Delete");
-	DeletePrepare();
-	DeleteCleanup(fForce);
-	
+
+	DeletePrepare();		// virtual!
+	DeleteCleanup(fForce);	// not virtual!
+
 	g_World.m_ObjDelete.InsertContentTail(this);
+	
 	return true;
 }
 
@@ -196,55 +204,12 @@ void CObjBase::SetTimeStamp(int64 t_time)
 	m_timestamp = t_time;
 }
 
-
-void CObjBase::TickingListRecursiveAdd()
-{
-	ADDTOCALLSTACK("CObjBase::TickingListRecursiveAdd");
-	if (IsTimerSet())
-	{
-		CWorldTickingList::AddObjSingle(GetTimeoutRaw(), this, false);
-	}
-
-	if (CContainer* pCont = dynamic_cast<CContainer*>(this))
-	{
-		for (CSObjContRec* pContRec : pCont->GetIterationSafeContReverse())
-		{
-			CObjBase* pObj = dynamic_cast<CObjBase*>(pContRec);
-			if (pObj && pObj->IsTimerSet())
-			{
-				CWorldTickingList::AddObjSingle(pObj->GetTimeoutRaw(), pObj, false);
-			}
-		}
-	}
-}
-
-void CObjBase::TickingListRecursiveDel()
-{
-	ADDTOCALLSTACK("CObjBase::TickingListRecursiveDel");
-	if (IsTimerSet())
-	{
-		CWorldTickingList::DelObjSingle(this, false);
-	}
-
-	if (CContainer* pCont = dynamic_cast<CContainer*>(this))
-	{
-		for (CSObjContRec* pContRec : pCont->GetIterationSafeContReverse())
-		{
-			CObjBase* pObj = dynamic_cast<CObjBase*>(pContRec);
-			if (pObj && pObj->IsTimerSet())
-			{
-				CWorldTickingList::DelObjSingle(pObj, false);
-			}
-		}
-	}
-}
-
 void CObjBase::TimeoutRecursiveResync(int64 iDelta)
 {
 	ADDTOCALLSTACK("CObjBase::TimeoutRecursiveResync");
 	if (_IsTimerSet())
 	{
-		_SetTimeout(GetTimeoutRaw() + iDelta);
+		_SetTimeout(_GetTimerAdjusted() + iDelta);
 	}
 
 	if (CContainer* pCont = dynamic_cast<CContainer*>(this))
@@ -714,7 +679,7 @@ bool CObjBase::MoveNear(CPointMap pt, ushort iSteps )
 	// Move to nearby this other object.
 	// Actually move it within +/- iSteps
 
-	CPointMap ptOld = pt;
+	CPointMap ptOld(pt);
 	for ( uint i = 0; i < iSteps; ++i )
 	{
 		pt = ptOld;
@@ -1932,12 +1897,14 @@ bool CObjBase::r_LoadVal( CScript & s )
                 */
                 if (iPrevBuild && (iPrevBuild >= 2866)) // commit #e08723c54b0a4a3b1601eba6f34a6118891f1313
                 {
+					// If TIMER = 0 was saved it means that at the moment of the worldsave the timer was elapsed but its object could not tick,
+					//	since it was waiting a GoAwake() call. Now set the timer to tick asap.
                     _SetTimeout(iTimeout);   // new timer: set msecs timer
                     break;
                 }
             }
             fResendTooltip = true;  // not really need to even try to resend it on load, but resend otherwise.
-            _SetTimeoutS(iTimeout);   // old timer: in seconds.
+            _SetTimeoutS(iTimeout); // old timer: in seconds.
             break;
         }
         case OC_TIMERD:
@@ -1980,17 +1947,17 @@ bool CObjBase::r_LoadVal( CScript & s )
 void CObjBase::r_Write( CScript & s )
 {
 	ADDTOCALLSTACK_INTENSIVE("CObjBase::r_Write");
-	s.WriteKeyHex( "SERIAL", GetUID());
+	s.WriteKeyHex( "SERIAL", GetUID().GetObjUID());
 	if ( IsIndividualName() )
 		s.WriteKeyStr( "NAME", GetIndividualName());
 	if ( m_wHue != HUE_DEFAULT )
 		s.WriteKeyHex( "COLOR", GetHue());
-	if ( IsTimerSet() )
+	if ( _IsTimerSet() )
 		s.WriteKeyVal( "TIMER", _GetTimerAdjusted());
 	if ( m_timestamp > 0 )
 		s.WriteKeyVal( "TIMESTAMP", GetTimeStamp());
 	if ( const CCSpawn* pSpawn = GetSpawn() )
-		s.WriteKeyHex("SPAWNITEM", pSpawn->GetLink()->GetUID());
+		s.WriteKeyHex("SPAWNITEM", pSpawn->GetLink()->GetUID().GetObjUID());
 	if ( m_ModAr )
 		s.WriteKeyVal("MODAR", m_ModAr);
 	if ( m_ModMaxWeight )
@@ -2266,6 +2233,12 @@ bool CObjBase::r_Verb( CScript & s, CTextConsole * pSrc ) // Execute command fro
 			EXC_SET_BLOCK("FLIP");
 			Flip();
 			break;
+		case OV_GOAWAKE:
+			_GoAwake();
+			break;
+		case OV_GOSLEEP:
+			_GoSleep();
+			break;
 		case OV_INPDLG:
 			// "INPDLG" verb maxchars
 			// else assume it was a property button.
@@ -2275,7 +2248,7 @@ bool CObjBase::r_Verb( CScript & s, CTextConsole * pSrc ) // Execute command fro
 					return false;
 
 				tchar *Arg_ppCmd[2];		// Maximum parameters in one line
-				size_t iQty = Str_ParseCmds( s.GetArgStr(), Arg_ppCmd, CountOf( Arg_ppCmd ));
+				int iQty = Str_ParseCmds( s.GetArgStr(), Arg_ppCmd, CountOf( Arg_ppCmd ));
 
 				CSString sOrgValue;
 				if ( ! r_WriteVal( Arg_ppCmd[0], sOrgValue, pSrc ))
@@ -3083,21 +3056,21 @@ dword CObjBase::UpdatePropertyRevision(dword hash)
 void CObjBase::UpdatePropertyFlag()
 {
 	ADDTOCALLSTACK("CObjBase::UpdatePropertyFlag");
-	if ( !(g_Cfg.m_iFeatureAOS & FEATURE_AOS_UPDATE_B) || g_Serv.IsLoading() )
+	if (!(g_Cfg.m_iFeatureAOS & FEATURE_AOS_UPDATE_B) || g_Serv.IsLoading())
 		return;
 
 	m_fStatusUpdate |= SU_UPDATE_TOOLTIP;
 
-    // Items equipped, inside containers or with timer expired doesn't receive ticks and need to be added to a list of items to be processed separately
-    if (!IsTopLevel() || _IsTimerExpired())
-    {
-		CWorldTickingList::AddObjStatusUpdate(this);
-    }
+	// Items equipped, inside containers or with timer expired doesn't receive ticks and need to be added to a list of items to be processed separately
+	if (!IsTopLevel() || _IsTimerExpired())
+	{
+		CWorldTickingList::AddObjStatusUpdate(this, false);
+	}
 }
 
 dword CObjBase::GetPropertyHash() const
 {
-    return m_PropertyHash;
+	return m_PropertyHash;
 }
 
 void CObjBase::OnTickStatusUpdate()
@@ -3105,37 +3078,77 @@ void CObjBase::OnTickStatusUpdate()
 	ADDTOCALLSTACK("CObjBase::OnTickStatusUpdate");
 	// process m_fStatusUpdate flags
 
-    if (m_fStatusUpdate & SU_UPDATE_TOOLTIP)
-    {
-        ResendTooltip();
-    }
+	if (m_fStatusUpdate & SU_UPDATE_TOOLTIP)
+	{
+		ResendTooltip();
+	}
 
-    CCItemDamageable *pItemDmg = static_cast<CCItemDamageable*>(GetComponent(COMP_ITEMDAMAGEABLE));
-    if (pItemDmg)
-    {
-        pItemDmg->OnTickStatsUpdate();
-    }
+	if (IsItem())
+	{
+		if (auto pItemDmg = static_cast<CCItemDamageable*>(GetComponent(COMP_ITEMDAMAGEABLE)))
+		{
+			pItemDmg->OnTickStatsUpdate();
+		}
+	}
+}
+
+void CObjBase::_GoAwake()
+{
+	ADDTOCALLSTACK("CObjBase::_GoAwake");
+	CTimedObject::_GoAwake();
+	if (auto pContainer = dynamic_cast<CContainer*>(this))
+	{
+		pContainer->_GoAwake(); // This method isn't virtual
+	}
+
+	if (_IsTimerSet())
+	{
+		CWorldTickingList::AddObjSingle(_GetTimeoutRaw(), this, true);
+	}
+	// CWorldTickingList::AddObjStatusUpdate(this, false);	// Don't! It's done when needed in UpdatePropertyFlag()
+}
+
+void CObjBase::_GoSleep()
+{
+	ADDTOCALLSTACK("CObjBase::_GoSleep");
+	CTimedObject::_GoSleep();
+
+	if (_IsTimerSet())
+	{
+		CWorldTickingList::DelObjSingle(this);
+	}
+	CWorldTickingList::DelObjStatusUpdate(this, false);
 }
 
 bool CObjBase::_CanTick() const
 {
 	EXC_TRY("Can tick?");
 
-	if (_IsSleeping())
-		return false;
+	// Directly call the method specifying the belonging class, to avoid the overhead of vtable lookup under the hood.
+	bool fCanTick = !CTimedObject::_IsSleeping();
 
-	if (const CSObjCont* pParent = GetParent())
+	if (fCanTick)
 	{
-		const CObjBase* pObjParent = dynamic_cast<const CObjBase*>(pParent);
-		if (pObjParent && !pObjParent->CanTick())	// It calls the virtuals obviously (case of CChar)
-			return false;
+		if (const CSObjCont* pParent = GetParent())
+		{
+			const CObjBase* pObjParent = dynamic_cast<const CObjBase*>(pParent);
+			// The parent can be another CObjBase or even a Sector -> Do not use CTimedObject* ?
+			if (pObjParent && !pObjParent->CanTick())	// It calls the virtuals obviously
+				fCanTick = false;
+		}
 	}
 
-	// return CTimedObject::_CanTick();
+	if (!fCanTick)
+	{
+		// Try to call the Can method the less often possible.
+		fCanTick = Can(CAN_O_NOSLEEP);
+	}
+
+	return fCanTick;
 
 	EXC_CATCH;
 
-	return true;
+	return false;
 }
 
 void CObjBase::ResendTooltip(bool fSendFull, bool fUseCache)
@@ -3268,7 +3281,6 @@ void CObjBase::SetPropStr( COMPPROPS_TYPE iCompPropsType, CComponentProps::Prope
     if (!pCompProps)
     {
         g_Log.EventDebug("CEntityProps: SetPropStr on unsubscribed CCProps. iCompPropsType %d, iPropIndex %d.\n", iCompPropsType, iPropIndex);
-		pCompProps = CreateSubscribeComponentProps(iCompPropsType);
 		ASSERT(pCompProps);
     }
     const RESDISPLAY_VERSION iLimitToEra = Base_GetDef()->_iEraLimitProps;
@@ -3288,7 +3300,6 @@ void CObjBase::SetPropNum( COMPPROPS_TYPE iCompPropsType, CComponentProps::Prope
     if (!pCompProps)
     {
         g_Log.EventDebug("CEntityProps: SetPropNum on unsubscribed CCProps. iCompPropsType %d, iPropIndex %d.\n", iCompPropsType, iPropIndex);
-        pCompProps = CreateSubscribeComponentProps(iCompPropsType);
 		ASSERT(pCompProps);
     }
     const RESDISPLAY_VERSION iLimitToEra = Base_GetDef()->_iEraLimitProps;
@@ -3318,7 +3329,6 @@ void CObjBase::ModPropNum( COMPPROPS_TYPE iCompPropsType, CComponentProps::Prope
     if (!pCompProps)
     {
         g_Log.EventDebug("CEntityProps: ModPropNum on unsubscribed CCProps. iCompPropsType %d, iPropIndex %d, fBaseDef %d.\n", iCompPropsType, iPropIndex, (int)fBaseDef);
-		pCompProps = CreateSubscribeComponentProps(iCompPropsType);
 		ASSERT(pCompProps);
         fPropExists = false;
     }

@@ -20,7 +20,9 @@
 #include "../CEntity.h"
 #include "CItemBase.h"
 
+
 class CWorldTicker;
+class CCSpawn;
 
 enum ITC_TYPE	// Item Template commands
 {
@@ -40,6 +42,7 @@ class CItem : public CObjBase
 	// RES_WORLDITEM
 
 	friend class CWorldTicker;
+	friend class CCSpawn;
 
 public:
 	static const char *m_sClassName;
@@ -554,11 +557,14 @@ public:
 	virtual bool NotifyDelete(); // overridden CItemContainer:: method
 	virtual bool Delete(bool fForce = false) override;
 
+protected:
+	virtual void _GoAwake() override;
+	virtual void _GoSleep() override;
 
 	// On CItem, _OnTick is virtual also because we need to call the topmost superclass:
 	//	a CItem can be the base class for CItemShip, CItemMessage...
-protected:	virtual bool _OnTick() override;
-//public:	virtual bool  OnTick() override;
+public:
+	virtual bool _OnTick() override;
 
 public:
 	virtual void OnHear( lpctstr pszCmd, CChar * pSrc );
@@ -633,14 +639,14 @@ public:
 
 	height_t GetHeight() const;
 	int64  GetDecayTime() const;
-	void SetDecayTime( int64 iMsecsTimeout = 0 );
-    void SetDecayTimeD(int64 iTenthsTimeout = 0)
+	void SetDecayTime(int64 iMsecsTimeout, bool fOverrideAlways = false);
+    void SetDecayTimeD(int64 iTenthsTimeout, bool fOverrideAlways = false)
     {
-        SetDecayTime(iTenthsTimeout * MSECS_PER_TENTH);
+        SetDecayTime(iTenthsTimeout * MSECS_PER_TENTH, fOverrideAlways);
     }
-    void SetDecayTimeS(int64 iSecondsTimeout = 0)
+    void SetDecayTimeS(int64 iSecondsTimeout, bool fOverrideAlways = false)
     {
-        SetDecayTime(iSecondsTimeout * MSECS_PER_SEC);
+        SetDecayTime(iSecondsTimeout * MSECS_PER_SEC, fOverrideAlways);
     }
 	SOUND_TYPE GetDropSound( const CObjBase * pObjOn ) const;
 	bool IsTopLevelMultiLocked() const;
@@ -678,10 +684,10 @@ public:
 
 	virtual int GetWeight(word amount = 0) const;
 
-protected:	virtual void _SetTimeout(int64 iMsecs) override;
-public:		virtual void  SetTimeout(int64 iMsecs) override;
+protected:	virtual void _SetTimeout(int64 iMsecs) override final;
 
-	virtual void OnMoveFrom();
+public:
+	virtual void OnMoveFrom() {};	// Moving from current location.
 	virtual bool MoveTo(const CPointMap& pt, bool fForceFix = false); // Put item on the ground here.
 	bool MoveToUpdate(const CPointMap& pt, bool fForceFix = false);
 	bool MoveToDecay(const CPointMap & pt, int64 iMsecsTimeout, bool fForceFix = false);
