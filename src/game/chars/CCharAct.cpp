@@ -3464,7 +3464,7 @@ CRegion * CChar::CanMoveWalkTo( CPointMap & ptDst, bool fCheckChars, bool fCheck
 		if ( pChar->GetTopZ() - g_Cfg.m_FallingHeight >= ptDst.m_z )
 		{
 			//char is falling
-			CScriptTriggerArgs Args( this, ptDst, 0 );
+			CScriptTriggerArgs Args( pChar->GetTopZ(), ptDst.m_z, 0 );
 
 			if (IsTrigUsed(TRIGGER_FALLING)
 			{
