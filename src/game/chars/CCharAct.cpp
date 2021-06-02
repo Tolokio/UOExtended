@@ -3461,10 +3461,15 @@ CRegion * CChar::CanMoveWalkTo( CPointMap & ptDst, bool fCheckChars, bool fCheck
 	if ( !fCheckOnly )
 	{
 		// Falling trigger
-		if ( pChar->GetTopZ() - 10 >= ptDst.m_z )
+		if ( pChar->GetTopZ() - g_Cfg.m_FallingHeight >= ptDst.m_z )
 		{
 			//char is falling
-			g_Log.EventWarn("a Char is falling");
+			CScriptTriggerArgs Args( this, ptDst, 0 );
+
+			if (IsTrigUsed(TRIGGER_FALLING)
+			{
+				pChar->onTrigger(CTRIG_FALLING,pChar,&args)
+			}
 		}
 		//
 		EXC_SET_BLOCK("Stamina penalty");

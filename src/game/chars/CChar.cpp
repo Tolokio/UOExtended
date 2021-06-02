@@ -69,7 +69,8 @@ lpctstr const CChar::sm_szTrigName[CTRIG_QTY+1] =	// static
 	"@EnvironChange",		// my environment changed somehow (light,weather,season,region)
 	"@ExpChange",			// EXP is going to change
 	"@ExpLevelChange",		// Experience LEVEL is going to change
-	"@FameChange",				// Fame changed
+	"@FameChange",			// Fame changed
+	"@Falling",				// Char is falling
 	"@FollowersUpdate",
 
 	"@GetHit",				// I just got hit.

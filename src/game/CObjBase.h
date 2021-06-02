@@ -1108,6 +1108,7 @@ enum CTRIG_TYPE : short
 	CTRIG_ExpChange,        // EXP is going to change
 	CTRIG_ExpLevelChange,   // Experience LEVEL is going to change
 	CTRIG_FameChange,       // Fame chaged
+    CTRIG_Falling,          // CHAR IS FALLING
 	CTRIG_FollowersUpdate,  // Adding or removing CurFollowers.
 
 	CTRIG_GetHit,           // I just got hit.
